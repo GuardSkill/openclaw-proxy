@@ -266,6 +266,8 @@ export type AgentDefaultsConfig = {
   };
   /** Optional sandbox settings for non-main sessions. */
   sandbox?: AgentSandboxConfig;
+  /** HTTP proxy URL for LLM API requests (e.g., "http://127.0.0.1:7890"). */
+  proxy?: string;
 };
 
 export type AgentCompactionMode = "default" | "safeguard";

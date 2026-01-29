@@ -369,6 +369,15 @@ export async function startGatewayServer(
       activate: true,
     })
   ).config;
+
+  // Initialize HTTP proxy for LLM API requests (supports config and env vars).
+  const { installProxyFetch, resolveProxyUrl } = await import("../infra/proxy-fetch.js");
+  const proxyUrl = resolveProxyUrl(cfgAtStart.agents?.defaults?.proxy);
+  if (proxyUrl) {
+    installProxyFetch(proxyUrl);
+    log.info(`gateway: HTTP proxy enabled: ${proxyUrl}`);
+  }
+
   const diagnosticsEnabled = isDiagnosticsEnabled(cfgAtStart);
   if (diagnosticsEnabled) {
     startDiagnosticHeartbeat();

@@ -160,6 +160,8 @@ export const AgentDefaultsSchema = z
       .strict()
       .optional(),
     sandbox: AgentSandboxSchema,
+    /** HTTP proxy URL for LLM API requests (e.g., "http://127.0.0.1:7890"). */
+    proxy: z.string().optional(),
   })
   .strict()
   .optional();
