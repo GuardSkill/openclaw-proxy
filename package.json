@@ -1,7 +1,7 @@
 {
-  "name": "openclaw",
+  "name": "@guadskill/openclaw-proxy",
   "version": "2026.2.26",
-  "description": "Multi-channel AI gateway with extensible messaging integrations",
+  "description": "WhatsApp gateway CLI (Baileys web) with Pi RPC agent",
   "keywords": [],
   "homepage": "https://github.com/openclaw/openclaw#readme",
   "bugs": {
