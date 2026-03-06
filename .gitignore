@@ -27,6 +27,7 @@ mise.toml
 apps/android/.gradle/
 apps/android/app/build/
 apps/android/.cxx/
+apps/android/.kotlin/
 
 # Bun build artifacts
 *.bun-build
@@ -38,6 +39,9 @@ apps/shared/OpenClawKit/Package.resolved
 bin/
 bin/clawdbot-mac
 bin/docs-list
+# Exception: sherpa-onnx-tts binary is tracked in git (upstream force-added)
+!skills/sherpa-onnx-tts/bin/
+!skills/sherpa-onnx-tts/bin/sherpa-onnx-tts
 apps/macos/.build-local/
 apps/macos/.swiftpm/
 apps/shared/MoltbotKit/.swiftpm/
@@ -94,7 +98,7 @@ USER.md
 !.agent/workflows/
 /local/
 package-lock.json
-.claude/settings.local.json
+.claude/
 .agents/
 .agents
 .agent/
