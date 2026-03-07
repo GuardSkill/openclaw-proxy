@@ -1,5 +1,7 @@
 # 🦞 OpenClaw — Personal AI Assistant
 
+> **国内用户（Linux/Windows）:** 本版本为 [@guadskill/openclaw-proxy](https://www.npmjs.com/package/@guadskill/openclaw-proxy)，内置 HTTP 代理支持与 PM2 守护进程。请先阅读 **[国内版设置方式](国内版设置方式.md)** 完成代理配置。
+
 <p align="center">
     <picture>
         <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/openclaw-logo-text-dark.png">
