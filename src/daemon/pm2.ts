@@ -11,10 +11,15 @@ const formatLine = (label: string, value: string) => {
   return `${colorize(rich, theme.muted, `${label}:`)} ${colorize(rich, theme.command, value)}`;
 };
 
-async function execPm2(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
+async function execPm2(
+  args: string[],
+  opts?: { env?: Record<string, string | undefined> },
+): Promise<{ stdout: string; stderr: string; code: number }> {
   try {
+    const execEnv = opts?.env ? { ...process.env, ...opts.env } : undefined;
     const { stdout, stderr } = await execFileAsync("pm2", args, {
       encoding: "utf8",
+      ...(execEnv ? { env: execEnv as Record<string, string> } : {}),
     });
     return {
       stdout: String(stdout ?? ""),
@@ -57,10 +62,12 @@ export async function installPm2Service({
   env,
   stdout,
   programArguments,
+  environment,
 }: {
   env: Record<string, string | undefined>;
   stdout: NodeJS.WritableStream;
   programArguments: string[];
+  environment?: Record<string, string | undefined>;
 }): Promise<void> {
   await assertPm2Available();
   const serviceName = resolvePm2ServiceName(env);
@@ -82,7 +89,9 @@ export async function installPm2Service({
     ...args,
   ];
 
-  const start = await execPm2(pm2Args);
+  // Pass service environment vars (e.g. OPENCLAW_GATEWAY_TOKEN) to the pm2 start
+  // command so PM2 stores them in pm2_env.env and they survive restarts.
+  const start = await execPm2(pm2Args, { env: environment });
   if (start.code !== 0) {
     throw new Error(`pm2 start failed: ${start.stderr || start.stdout}`.trim());
   }
@@ -140,7 +149,9 @@ export async function restartPm2Service({
 export async function isPm2ServiceEnabled(args: {
   env?: Record<string, string | undefined>;
 }): Promise<boolean> {
-  if (!(await isPm2Available())) return false;
+  if (!(await isPm2Available())) {
+    return false;
+  }
   const serviceName = resolvePm2ServiceName(args.env ?? {});
   const res = await execPm2(["describe", serviceName]);
   return res.code === 0;
@@ -166,8 +177,10 @@ export async function readPm2ServiceRuntime(
   }
 
   try {
-    const list = JSON.parse(res.stdout);
-    const app = list.find((p: any) => p.name === serviceName);
+    const list = JSON.parse(res.stdout) as unknown[];
+    const app = list.find((p) => (p as { name: string }).name === serviceName) as
+      | { name: string; pid: number; pm2_env: { status: string; exit_code: number } }
+      | undefined;
 
     if (!app) {
       return { status: "stopped", missingUnit: true };
@@ -193,15 +206,30 @@ export async function readPm2ServiceCommand(env: Record<string, string | undefin
 } | null> {
   const serviceName = resolvePm2ServiceName(env);
   const res = await execPm2(["jlist"]);
-  if (res.code !== 0) return null;
+  if (res.code !== 0) {
+    return null;
+  }
 
   try {
-    const list = JSON.parse(res.stdout);
-    const app = list.find((p: any) => p.name === serviceName);
-    if (!app) return null;
+    const list = JSON.parse(res.stdout) as unknown[];
+    const app = list.find((p) => (p as { name: string }).name === serviceName) as
+      | {
+          name: string;
+          pm2_env: {
+            pm_exec_path: string;
+            args?: string[];
+            exec_interpreter: string;
+            cwd: string;
+            env: Record<string, string>;
+          };
+        }
+      | undefined;
+    if (!app) {
+      return null;
+    }
 
     const execPath = app.pm2_env.pm_exec_path;
-    const args = app.pm2_env.args || [];
+    const args = app.pm2_env.args ?? [];
 
     return {
       programArguments: [app.pm2_env.exec_interpreter, execPath, ...args],
