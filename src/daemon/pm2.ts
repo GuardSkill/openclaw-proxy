@@ -16,10 +16,18 @@ async function execPm2(
   opts?: { env?: Record<string, string | undefined> },
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   try {
-    const execEnv = opts?.env ? { ...process.env, ...opts.env } : undefined;
+    // Build a clean string-only env by merging process.env with extra vars,
+    // filtering out any undefined values so execFileAsync doesn't choke.
+    let execEnv: Record<string, string> | undefined;
+    if (opts?.env) {
+      const merged: Record<string, string | undefined> = { ...process.env, ...opts.env };
+      execEnv = Object.fromEntries(
+        Object.entries(merged).filter((entry): entry is [string, string] => entry[1] !== undefined),
+      );
+    }
     const { stdout, stderr } = await execFileAsync("pm2", args, {
       encoding: "utf8",
-      ...(execEnv ? { env: execEnv as Record<string, string> } : {}),
+      ...(execEnv ? { env: execEnv } : {}),
     });
     return {
       stdout: String(stdout ?? ""),
