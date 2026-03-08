@@ -16,11 +16,18 @@ async function execPm2(
   opts?: { env?: Record<string, string | undefined> },
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   try {
-    // Build a clean string-only env by merging process.env with extra vars,
-    // filtering out any undefined values so execFileAsync doesn't choke.
+    // Build env for the pm2 CLI subprocess: start from full process.env so the
+    // pm2 binary is findable via PATH, then overlay the service-specific vars
+    // (e.g. OPENCLAW_GATEWAY_TOKEN).  Preserve process.env.PATH so version
+    // managers (nvm, etc.) remain reachable.  Drop any undefined values so
+    // execFileAsync doesn't choke on them.
     let execEnv: Record<string, string> | undefined;
     if (opts?.env) {
-      const merged: Record<string, string | undefined> = { ...process.env, ...opts.env };
+      const merged: Record<string, string | undefined> = {
+        ...process.env, // base: full env including full PATH
+        ...opts.env, // overlay: service vars (OPENCLAW_GATEWAY_TOKEN, etc.)
+        PATH: process.env.PATH, // always restore full PATH so pm2 binary is findable
+      };
       execEnv = Object.fromEntries(
         Object.entries(merged).filter((entry): entry is [string, string] => entry[1] !== undefined),
       );
