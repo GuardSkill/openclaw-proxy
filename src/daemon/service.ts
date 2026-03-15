@@ -121,16 +121,104 @@ const GATEWAY_SERVICE_REGISTRY: Record<SupportedGatewayServicePlatform, GatewayS
     readRuntime: readLaunchAgentRuntime,
   },
   linux: {
-    label: "systemd",
-    loadedText: "enabled",
-    notLoadedText: "disabled",
-    install: ignoreInstallResult(installSystemdService),
-    uninstall: uninstallSystemdService,
-    stop: stopSystemdService,
-    restart: restartSystemdService,
-    isLoaded: isSystemdServiceEnabled,
-    readCommand: readSystemdServiceExecStart,
-    readRuntime: readSystemdServiceRuntime,
+    label: "Systemd/PM2",
+    loadedText: "active",
+    notLoadedText: "inactive",
+    install: async (args) => {
+      if (await isSystemdUserServiceAvailable()) {
+        await installSystemdService(args);
+      } else if (await isPm2Available()) {
+        await installPm2Service(args);
+      } else {
+        await installSystemdService(args);
+      }
+    },
+    uninstall: async (args) => {
+      if (await isSystemdUserServiceAvailable()) {
+        try {
+          await uninstallSystemdService(args);
+        } catch {}
+      }
+      if (await isPm2Available()) {
+        try {
+          await uninstallPm2Service(args);
+        } catch {}
+      }
+    },
+    stop: async (args) => {
+      if (
+        (await isSystemdUserServiceAvailable()) &&
+        (await isSystemdServiceEnabled({ env: args.env }))
+      ) {
+        await stopSystemdService(args);
+        return;
+      }
+      if ((await isPm2Available()) && (await isPm2ServiceEnabled({ env: args.env }))) {
+        await stopPm2Service(args);
+        return;
+      }
+      await stopSystemdService(args);
+    },
+    restart: async (args) => {
+      if (
+        (await isSystemdUserServiceAvailable()) &&
+        (await isSystemdServiceEnabled({ env: args.env }))
+      ) {
+        return await restartSystemdService(args);
+      }
+      if ((await isPm2Available()) && (await isPm2ServiceEnabled({ env: args.env }))) {
+        await restartPm2Service(args);
+        return { outcome: "completed" } as const;
+      }
+      if (await isSystemdUserServiceAvailable()) {
+        return await restartSystemdService(args);
+      } else if (await isPm2Available()) {
+        await restartPm2Service(args);
+        return { outcome: "completed" } as const;
+      } else {
+        return await restartSystemdService(args);
+      }
+    },
+    isLoaded: async (args) => {
+      if (await isSystemdUserServiceAvailable()) {
+        if (await isSystemdServiceEnabled(args)) {
+          return true;
+        }
+      }
+      if (await isPm2Available()) {
+        if (await isPm2ServiceEnabled(args)) {
+          return true;
+        }
+      }
+      return false;
+    },
+    readCommand: async (env) => {
+      if (await isSystemdUserServiceAvailable()) {
+        const cmd = await readSystemdServiceExecStart(env);
+        if (cmd) {
+          return cmd;
+        }
+      }
+      if (await isPm2Available()) {
+        const cmd = await readPm2ServiceCommand(env);
+        if (cmd) {
+          return cmd;
+        }
+      }
+      return null;
+    },
+    readRuntime: async (env) => {
+      if (await isSystemdUserServiceAvailable()) {
+        const rt = await readSystemdServiceRuntime(env);
+        if (!rt.missingUnit) {
+          return rt;
+        }
+      }
+      if (await isPm2Available()) {
+        return await readPm2ServiceRuntime(env);
+      }
+      return { status: "unknown", detail: "Systemd/PM2 unavailable" };
+    },
   },
   win32: {
     label: "Scheduled Task",
@@ -156,124 +244,5 @@ export function resolveGatewayService(): GatewayService {
   if (isSupportedGatewayServicePlatform(process.platform)) {
     return GATEWAY_SERVICE_REGISTRY[process.platform];
   }
-
-  if (process.platform === "linux") {
-    return {
-      label: "Systemd/PM2",
-      loadedText: "active",
-      notLoadedText: "inactive",
-      install: async (args) => {
-        if (await isSystemdUserServiceAvailable()) {
-          await installSystemdService(args);
-        } else if (await isPm2Available()) {
-          await installPm2Service(args);
-        } else {
-          await installSystemdService(args);
-        }
-      },
-      uninstall: async (args) => {
-        if (await isSystemdUserServiceAvailable()) {
-          try {
-            await uninstallSystemdService(args);
-          } catch {}
-        }
-        if (await isPm2Available()) {
-          try {
-            await uninstallPm2Service(args);
-          } catch {}
-        }
-      },
-      stop: async (args) => {
-        if (
-          (await isSystemdUserServiceAvailable()) &&
-          (await isSystemdServiceEnabled({ env: args.env }))
-        ) {
-          await stopSystemdService(args);
-          return;
-        }
-        if ((await isPm2Available()) && (await isPm2ServiceEnabled({ env: args.env }))) {
-          await stopPm2Service(args);
-          return;
-        }
-        await stopSystemdService(args);
-      },
-      restart: async (args) => {
-        if (
-          (await isSystemdUserServiceAvailable()) &&
-          (await isSystemdServiceEnabled({ env: args.env }))
-        ) {
-          await restartSystemdService(args);
-          return;
-        }
-        if ((await isPm2Available()) && (await isPm2ServiceEnabled({ env: args.env }))) {
-          await restartPm2Service(args);
-          return;
-        }
-        if (await isSystemdUserServiceAvailable()) {
-          await restartSystemdService(args);
-        } else if (await isPm2Available()) {
-          await restartPm2Service(args);
-        } else {
-          await restartSystemdService(args);
-        }
-      },
-      isLoaded: async (args) => {
-        if (await isSystemdUserServiceAvailable()) {
-          if (await isSystemdServiceEnabled(args)) {
-            return true;
-          }
-        }
-        if (await isPm2Available()) {
-          if (await isPm2ServiceEnabled(args)) {
-            return true;
-          }
-        }
-        return false;
-      },
-      readCommand: async (env) => {
-        if (await isSystemdUserServiceAvailable()) {
-          const cmd = await readSystemdServiceExecStart(env);
-          if (cmd) {
-            return cmd;
-          }
-        }
-        if (await isPm2Available()) {
-          const cmd = await readPm2ServiceCommand(env);
-          if (cmd) {
-            return cmd;
-          }
-        }
-        return null;
-      },
-      readRuntime: async (env) => {
-        if (await isSystemdUserServiceAvailable()) {
-          const rt = await readSystemdServiceRuntime(env);
-          if (!rt.missingUnit) {
-            return rt;
-          }
-        }
-        if (await isPm2Available()) {
-          return await readPm2ServiceRuntime(env);
-        }
-        return { status: "unknown", detail: "Systemd/PM2 unavailable" };
-      },
-    };
-  }
-
-  if (process.platform === "win32") {
-    return {
-      label: "Scheduled Task",
-      loadedText: "registered",
-      notLoadedText: "missing",
-      install: ignoreInstallResult(installScheduledTask),
-      uninstall: uninstallScheduledTask,
-      stop: stopScheduledTask,
-      restart: restartScheduledTask,
-      isLoaded: isScheduledTaskInstalled,
-      readCommand: readScheduledTaskCommand,
-      readRuntime: readScheduledTaskRuntime,
-    };
-  }
-
   throw new Error(`Gateway service install not supported on ${process.platform}`);
 }

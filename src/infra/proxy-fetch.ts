@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { ProxyAgent } from "undici";
 import { wrapFetchWithAbortSignal } from "./fetch.js";
 
@@ -12,7 +11,9 @@ let installedProxyUrl: string | undefined;
  */
 export function resolveProxyUrl(configProxy?: string): string | undefined {
   const trimmed = configProxy?.trim();
-  if (trimmed) return trimmed;
+  if (trimmed) {
+    return trimmed;
+  }
   return (
     process.env.HTTPS_PROXY ||
     process.env.HTTP_PROXY ||
@@ -30,7 +31,9 @@ export function resolveProxyUrl(configProxy?: string): string | undefined {
  */
 export function installProxyFetch(proxyUrl: string): void {
   if (proxyInstalled) {
-    if (installedProxyUrl === proxyUrl) return;
+    if (installedProxyUrl === proxyUrl) {
+      return;
+    }
     uninstallProxyFetch();
   }
 
@@ -51,7 +54,9 @@ export function installProxyFetch(proxyUrl: string): void {
  * Restore the original global fetch (remove proxy).
  */
 export function uninstallProxyFetch(): void {
-  if (!proxyInstalled || !originalFetch) return;
+  if (!proxyInstalled || !originalFetch) {
+    return;
+  }
   globalThis.fetch = originalFetch;
   originalFetch = undefined;
   proxyInstalled = false;
