@@ -37,6 +37,7 @@ import type {
   GatewayServiceEnvArgs,
   GatewayServiceInstallArgs,
   GatewayServiceManageArgs,
+  GatewayServiceRestartResult,
 } from "./service-types.js";
 import {
   installSystemdService,
@@ -55,6 +56,7 @@ export type {
   GatewayServiceEnvArgs,
   GatewayServiceInstallArgs,
   GatewayServiceManageArgs,
+  GatewayServiceRestartResult,
 } from "./service-types.js";
 
 function ignoreInstallResult(
@@ -72,26 +74,87 @@ export type GatewayService = {
   install: (args: GatewayServiceInstallArgs) => Promise<void>;
   uninstall: (args: GatewayServiceManageArgs) => Promise<void>;
   stop: (args: GatewayServiceControlArgs) => Promise<void>;
-  restart: (args: GatewayServiceControlArgs) => Promise<void>;
+  restart: (args: GatewayServiceControlArgs) => Promise<GatewayServiceRestartResult>;
   isLoaded: (args: GatewayServiceEnvArgs) => Promise<boolean>;
   readCommand: (env: GatewayServiceEnv) => Promise<GatewayServiceCommandConfig | null>;
   readRuntime: (env: GatewayServiceEnv) => Promise<GatewayServiceRuntime>;
 };
 
-export function resolveGatewayService(): GatewayService {
-  if (process.platform === "darwin") {
+export function describeGatewayServiceRestart(
+  serviceNoun: string,
+  result: GatewayServiceRestartResult,
+): {
+  scheduled: boolean;
+  daemonActionResult: "restarted" | "scheduled";
+  message: string;
+  progressMessage: string;
+} {
+  if (result.outcome === "scheduled") {
     return {
-      label: "LaunchAgent",
-      loadedText: "loaded",
-      notLoadedText: "not loaded",
-      install: ignoreInstallResult(installLaunchAgent),
-      uninstall: uninstallLaunchAgent,
-      stop: stopLaunchAgent,
-      restart: restartLaunchAgent,
-      isLoaded: isLaunchAgentLoaded,
-      readCommand: readLaunchAgentProgramArguments,
-      readRuntime: readLaunchAgentRuntime,
+      scheduled: true,
+      daemonActionResult: "scheduled",
+      message: `restart scheduled, ${serviceNoun.toLowerCase()} will restart momentarily`,
+      progressMessage: `${serviceNoun} service restart scheduled.`,
     };
+  }
+  return {
+    scheduled: false,
+    daemonActionResult: "restarted",
+    message: `${serviceNoun} service restarted.`,
+    progressMessage: `${serviceNoun} service restarted.`,
+  };
+}
+
+type SupportedGatewayServicePlatform = "darwin" | "linux" | "win32";
+
+const GATEWAY_SERVICE_REGISTRY: Record<SupportedGatewayServicePlatform, GatewayService> = {
+  darwin: {
+    label: "LaunchAgent",
+    loadedText: "loaded",
+    notLoadedText: "not loaded",
+    install: ignoreInstallResult(installLaunchAgent),
+    uninstall: uninstallLaunchAgent,
+    stop: stopLaunchAgent,
+    restart: restartLaunchAgent,
+    isLoaded: isLaunchAgentLoaded,
+    readCommand: readLaunchAgentProgramArguments,
+    readRuntime: readLaunchAgentRuntime,
+  },
+  linux: {
+    label: "systemd",
+    loadedText: "enabled",
+    notLoadedText: "disabled",
+    install: ignoreInstallResult(installSystemdService),
+    uninstall: uninstallSystemdService,
+    stop: stopSystemdService,
+    restart: restartSystemdService,
+    isLoaded: isSystemdServiceEnabled,
+    readCommand: readSystemdServiceExecStart,
+    readRuntime: readSystemdServiceRuntime,
+  },
+  win32: {
+    label: "Scheduled Task",
+    loadedText: "registered",
+    notLoadedText: "missing",
+    install: ignoreInstallResult(installScheduledTask),
+    uninstall: uninstallScheduledTask,
+    stop: stopScheduledTask,
+    restart: restartScheduledTask,
+    isLoaded: isScheduledTaskInstalled,
+    readCommand: readScheduledTaskCommand,
+    readRuntime: readScheduledTaskRuntime,
+  },
+};
+
+function isSupportedGatewayServicePlatform(
+  platform: NodeJS.Platform,
+): platform is SupportedGatewayServicePlatform {
+  return Object.hasOwn(GATEWAY_SERVICE_REGISTRY, platform);
+}
+
+export function resolveGatewayService(): GatewayService {
+  if (isSupportedGatewayServicePlatform(process.platform)) {
+    return GATEWAY_SERVICE_REGISTRY[process.platform];
   }
 
   if (process.platform === "linux") {
@@ -156,28 +219,38 @@ export function resolveGatewayService(): GatewayService {
       },
       isLoaded: async (args) => {
         if (await isSystemdUserServiceAvailable()) {
-          if (await isSystemdServiceEnabled(args)) return true;
+          if (await isSystemdServiceEnabled(args)) {
+            return true;
+          }
         }
         if (await isPm2Available()) {
-          if (await isPm2ServiceEnabled(args)) return true;
+          if (await isPm2ServiceEnabled(args)) {
+            return true;
+          }
         }
         return false;
       },
       readCommand: async (env) => {
         if (await isSystemdUserServiceAvailable()) {
           const cmd = await readSystemdServiceExecStart(env);
-          if (cmd) return cmd;
+          if (cmd) {
+            return cmd;
+          }
         }
         if (await isPm2Available()) {
           const cmd = await readPm2ServiceCommand(env);
-          if (cmd) return cmd;
+          if (cmd) {
+            return cmd;
+          }
         }
         return null;
       },
       readRuntime: async (env) => {
         if (await isSystemdUserServiceAvailable()) {
           const rt = await readSystemdServiceRuntime(env);
-          if (!rt.missingUnit) return rt;
+          if (!rt.missingUnit) {
+            return rt;
+          }
         }
         if (await isPm2Available()) {
           return await readPm2ServiceRuntime(env);
