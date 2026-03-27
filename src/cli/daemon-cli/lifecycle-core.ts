@@ -12,6 +12,7 @@ import { isGatewaySecretRefUnavailableError } from "../../gateway/credentials.js
 import { isWSL } from "../../infra/wsl.js";
 import { defaultRuntime } from "../../runtime.js";
 import { resolveGatewayTokenForDriftCheck } from "./gateway-token-drift.js";
+import { runDaemonInstall } from "./install.js";
 import {
   buildDaemonServiceSnapshot,
   createNullWriter,
@@ -23,6 +24,7 @@ import { filterContainerGenericHints } from "./shared.js";
 
 type DaemonLifecycleOptions = {
   json?: boolean;
+  autoInstall?: boolean;
 };
 
 type RestartPostCheckContext = {
@@ -232,7 +234,17 @@ export async function runServiceStart(params: {
     }
   }
   try {
-    const startResult = await startGatewayService(params.service, { env: process.env, stdout });
+    let startResult = await startGatewayService(params.service, { env: process.env, stdout });
+    if (startResult.outcome === "missing-install" && params.opts?.autoInstall) {
+      if (!json) {
+        defaultRuntime.log(
+          `${params.serviceNoun} service not installed. Installing automatically...`,
+        );
+      }
+      // runDaemonInstall exits on failure, so if we reach the next line the install succeeded.
+      await runDaemonInstall({ json });
+      startResult = await startGatewayService(params.service, { env: process.env, stdout });
+    }
     if (startResult.outcome === "missing-install") {
       await handleServiceNotLoaded({
         serviceNoun: params.serviceNoun,
