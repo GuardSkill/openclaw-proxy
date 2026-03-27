@@ -15,10 +15,8 @@ import { resolveGatewayTokenForDriftCheck } from "./gateway-token-drift.js";
 import { runDaemonInstall } from "./install.js";
 import {
   buildDaemonServiceSnapshot,
-  createNullWriter,
-  type DaemonAction,
+  createDaemonActionContext,
   type DaemonActionResponse,
-  emitDaemonActionJson,
 } from "./response.js";
 import { filterContainerGenericHints } from "./shared.js";
 
@@ -60,28 +58,9 @@ async function maybeAugmentSystemdHints(hints: string[]): Promise<string[]> {
   ];
 }
 
-function createActionIO(params: { action: DaemonAction; json: boolean }) {
-  const stdout = params.json ? createNullWriter() : process.stdout;
-  const emit = (payload: Omit<DaemonActionResponse, "action">) => {
-    if (!params.json) {
-      return;
-    }
-    emitDaemonActionJson({ action: params.action, ...payload });
-  };
-  const fail = (message: string, hints?: string[]) => {
-    if (params.json) {
-      emit({ ok: false, error: message, hints });
-    } else {
-      defaultRuntime.error(message);
-    }
-    defaultRuntime.exit(1);
-  };
-  return { stdout, emit, fail };
-}
-
 function emitActionMessage(params: {
   json: boolean;
-  emit: ReturnType<typeof createActionIO>["emit"];
+  emit: ReturnType<typeof createDaemonActionContext>["emit"];
   payload: Omit<DaemonActionResponse, "action">;
 }) {
   params.emit(params.payload);
@@ -96,7 +75,7 @@ async function handleServiceNotLoaded(params: {
   loaded: boolean;
   renderStartHints: () => string[];
   json: boolean;
-  emit: ReturnType<typeof createActionIO>["emit"];
+  emit: ReturnType<typeof createDaemonActionContext>["emit"];
 }) {
   const hints = filterContainerGenericHints(
     await maybeAugmentSystemdHints(params.renderStartHints()),
@@ -119,7 +98,7 @@ async function handleServiceNotLoaded(params: {
 async function resolveServiceLoadedOrFail(params: {
   serviceNoun: string;
   service: GatewayService;
-  fail: ReturnType<typeof createActionIO>["fail"];
+  fail: ReturnType<typeof createDaemonActionContext>["fail"];
 }): Promise<boolean | null> {
   try {
     return await params.service.isLoaded({ env: process.env });
@@ -160,7 +139,7 @@ export async function runServiceUninstall(params: {
   assertNotLoadedAfterUninstall: boolean;
 }) {
   const json = Boolean(params.opts?.json);
-  const { stdout, emit, fail } = createActionIO({ action: "uninstall", json });
+  const { stdout, emit, fail } = createDaemonActionContext({ action: "uninstall", json });
 
   if (resolveIsNixMode(process.env)) {
     fail("Nix mode detected; service uninstall is disabled.");
@@ -211,7 +190,7 @@ export async function runServiceStart(params: {
   opts?: DaemonLifecycleOptions;
 }) {
   const json = Boolean(params.opts?.json);
-  const { stdout, emit, fail } = createActionIO({ action: "start", json });
+  const { stdout, emit, fail } = createDaemonActionContext({ action: "start", json });
 
   if (
     (await resolveServiceLoadedOrFail({
@@ -291,7 +270,7 @@ export async function runServiceStop(params: {
   onNotLoaded?: (ctx: NotLoadedActionContext) => Promise<NotLoadedActionResult | null>;
 }) {
   const json = Boolean(params.opts?.json);
-  const { stdout, emit, fail } = createActionIO({ action: "stop", json });
+  const { stdout, emit, fail } = createDaemonActionContext({ action: "stop", json });
 
   const loaded = await resolveServiceLoadedOrFail({
     serviceNoun: params.serviceNoun,
@@ -362,7 +341,7 @@ export async function runServiceRestart(params: {
   onNotLoaded?: (ctx: NotLoadedActionContext) => Promise<NotLoadedActionResult | null>;
 }): Promise<boolean> {
   const json = Boolean(params.opts?.json);
-  const { stdout, emit, fail } = createActionIO({ action: "restart", json });
+  const { stdout, emit, fail } = createDaemonActionContext({ action: "restart", json });
   const warnings: string[] = [];
   let handledNotLoaded: NotLoadedActionResult | null = null;
   const emitScheduledRestart = (
