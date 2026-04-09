@@ -10,9 +10,31 @@ import {
 import { resolveModelAsync } from "../agents/pi-embedded-runner/model.js";
 import { prepareModelForSimpleCompletion } from "../agents/simple-completion-transport.js";
 import type { OpenClawConfig } from "../config/config.js";
+import {
+  normalizeOptionalLowercaseString,
+  normalizeOptionalString,
+} from "../shared/string-coerce.js";
 import type { ResolvedTtsConfig } from "./tts.js";
 
 const TEMP_FILE_CLEANUP_DELAY_MS = 5 * 60 * 1000; // 5 minutes
+
+type SummarizeTextDeps = {
+  completeSimple: typeof completeSimple;
+  getApiKeyForModel: typeof getApiKeyForModel;
+  prepareModelForSimpleCompletion: typeof prepareModelForSimpleCompletion;
+  requireApiKey: typeof requireApiKey;
+  resolveModelAsync: typeof resolveModelAsync;
+};
+
+function resolveDefaultSummarizeTextDeps(): SummarizeTextDeps {
+  return {
+    completeSimple,
+    getApiKeyForModel,
+    prepareModelForSimpleCompletion,
+    requireApiKey,
+    resolveModelAsync,
+  };
+}
 
 export function requireInRange(value: number, min: number, max: number, label: string): void {
   if (!Number.isFinite(value) || value < min || value > max) {
@@ -21,11 +43,10 @@ export function requireInRange(value: number, min: number, max: number, label: s
 }
 
 export function normalizeLanguageCode(code?: string): string | undefined {
-  const trimmed = code?.trim();
-  if (!trimmed) {
+  const normalized = normalizeOptionalLowercaseString(code);
+  if (!normalized) {
     return undefined;
   }
-  const normalized = trimmed.toLowerCase();
   if (!/^[a-z]{2}$/.test(normalized)) {
     throw new Error("languageCode must be a 2-letter ISO 639-1 code (e.g. en, de, fr)");
   }
@@ -33,11 +54,10 @@ export function normalizeLanguageCode(code?: string): string | undefined {
 }
 
 export function normalizeApplyTextNormalization(mode?: string): "auto" | "on" | "off" | undefined {
-  const trimmed = mode?.trim();
-  if (!trimmed) {
+  const normalized = normalizeOptionalLowercaseString(mode);
+  if (!normalized) {
     return undefined;
   }
-  const normalized = trimmed.toLowerCase();
   if (normalized === "auto" || normalized === "on" || normalized === "off") {
     return normalized;
   }
@@ -72,7 +92,7 @@ function resolveSummaryModelRef(
   config: ResolvedTtsConfig,
 ): SummaryModelSelection {
   const defaultRef = resolveDefaultModelForAgent({ cfg });
-  const override = config.summaryModel?.trim();
+  const override = normalizeOptionalString(config.summaryModel);
   if (!override) {
     return { ref: defaultRef, source: "default" };
   }
@@ -93,13 +113,16 @@ function isTextContentBlock(block: { type: string }): block is TextContent {
   return block.type === "text";
 }
 
-export async function summarizeText(params: {
-  text: string;
-  targetLength: number;
-  cfg: OpenClawConfig;
-  config: ResolvedTtsConfig;
-  timeoutMs: number;
-}): Promise<SummarizeResult> {
+export async function summarizeText(
+  params: {
+    text: string;
+    targetLength: number;
+    cfg: OpenClawConfig;
+    config: ResolvedTtsConfig;
+    timeoutMs: number;
+  },
+  deps: SummarizeTextDeps = resolveDefaultSummarizeTextDeps(),
+): Promise<SummarizeResult> {
   const { text, targetLength, cfg, config, timeoutMs } = params;
   if (targetLength < 100 || targetLength > 10_000) {
     throw new Error(`Invalid targetLength: ${targetLength}`);
@@ -107,13 +130,13 @@ export async function summarizeText(params: {
 
   const startTime = Date.now();
   const { ref } = resolveSummaryModelRef(cfg, config);
-  const resolved = await resolveModelAsync(ref.provider, ref.model, undefined, cfg);
+  const resolved = await deps.resolveModelAsync(ref.provider, ref.model, undefined, cfg);
   if (!resolved.model) {
     throw new Error(resolved.error ?? `Unknown summary model: ${ref.provider}/${ref.model}`);
   }
-  const completionModel = prepareModelForSimpleCompletion({ model: resolved.model, cfg });
-  const apiKey = requireApiKey(
-    await getApiKeyForModel({ model: completionModel, cfg }),
+  const completionModel = deps.prepareModelForSimpleCompletion({ model: resolved.model, cfg });
+  const apiKey = deps.requireApiKey(
+    await deps.getApiKeyForModel({ model: completionModel, cfg }),
     ref.provider,
   );
 
@@ -122,7 +145,7 @@ export async function summarizeText(params: {
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const res = await completeSimple(
+      const res = await deps.completeSimple(
         completionModel,
         {
           messages: [
@@ -144,7 +167,6 @@ export async function summarizeText(params: {
           signal: controller.signal,
         },
       );
-
       const summary = res.content
         .filter(isTextContentBlock)
         .map((block) => block.text.trim())

@@ -4,7 +4,7 @@ node_modules
 docker-compose.override.yml
 docker-compose.extra.yml
 dist
-dist-runtime
+dist-runtime/
 pnpm-lock.yaml
 bun.lock
 bun.lockb
@@ -43,9 +43,6 @@ apps/shared/OpenClawKit/Package.resolved
 bin/
 bin/clawdbot-mac
 bin/docs-list
-# Exception: sherpa-onnx-tts binary is tracked in git (upstream force-added)
-!skills/sherpa-onnx-tts/bin/
-!skills/sherpa-onnx-tts/bin/sherpa-onnx-tts
 apps/macos/.build-local/
 apps/macos/.swiftpm/
 apps/shared/MoltbotKit/.swiftpm/
@@ -88,6 +85,7 @@ apps/ios/*.mobileprovision
 # Local untracked files
 .local/
 docs/.local/
+docs/internal/
 tmp/
 IDENTITY.md
 USER.md
@@ -138,5 +136,17 @@ ui/src/ui/views/__screenshots__
 ui/.vitest-attachments
 docs/superpowers
 
+# Generated docs baseline artifacts (locally generated, only hashes tracked)
+docs/.generated/*.json
+docs/.generated/*.jsonl
+
 # Deprecated changelog fragment workflow
 changelog/fragments/
+
+# Local scratch workspace
+.tmp/
+.artifacts/
+test/fixtures/openclaw-vitest-unit-report.json
+analysis/
+.artifacts/qa-e2e/
+extensions/qa-lab/web/dist/
