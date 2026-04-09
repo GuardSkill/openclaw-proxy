@@ -6,6 +6,7 @@ import { initSubagentRegistry } from "../agents/subagent-registry.js";
 import { getTotalPendingReplies } from "../auto-reply/reply/dispatcher-registry.js";
 import type { CanvasHostServer } from "../canvas-host/server.js";
 import { type ChannelId, listChannelPlugins } from "../channels/plugins/index.js";
+import { runChannelPluginStartupMaintenance } from "../channels/plugins/lifecycle-startup.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import { createDefaultDeps } from "../cli/deps.js";
 import { isRestartEnabled } from "../config/commands.js";
@@ -13,9 +14,10 @@ import {
   type ConfigFileSnapshot,
   type OpenClawConfig,
   applyConfigOverrides,
+  getRuntimeConfig,
   isNixMode,
   loadConfig,
-  migrateLegacyConfig,
+  registerConfigWriteListener,
   readConfigFileSnapshot,
   writeConfigFile,
 } from "../config/config.js";
@@ -30,16 +32,12 @@ import {
   resolveControlUiRootSync,
 } from "../infra/control-ui-assets.js";
 import { isDiagnosticsEnabled } from "../infra/diagnostic-events.js";
-import { logAcceptedEnvOption } from "../infra/env.js";
+import { isTruthyEnvValue, logAcceptedEnvOption } from "../infra/env.js";
 import { createExecApprovalForwarder } from "../infra/exec-approval-forwarder.js";
 import { onHeartbeatEvent } from "../infra/heartbeat-events.js";
 import { startHeartbeatRunner, type HeartbeatRunner } from "../infra/heartbeat-runner.js";
 import { getMachineDisplayName } from "../infra/machine-name.js";
 import { ensureOpenClawCliOnPath } from "../infra/path-env.js";
-import {
-  detectPluginInstallPathIssue,
-  formatPluginInstallPathIssue,
-} from "../infra/plugin-install-path-warnings.js";
 import { setGatewaySigusr1RestartPolicy, setPreRestartDeferralCheck } from "../infra/restart.js";
 import {
   primeRemoteSkillsCache,
@@ -50,15 +48,21 @@ import { enqueueSystemEvent } from "../infra/system-events.js";
 import { scheduleGatewayUpdateCheck } from "../infra/update-startup.js";
 import { startDiagnosticHeartbeat, stopDiagnosticHeartbeat } from "../logging/diagnostic.js";
 import { createSubsystemLogger, runtimeForLogger } from "../logging/subsystem.js";
-import { resolveConfiguredDeferredChannelPluginIds } from "../plugins/channel-plugin-ids.js";
+import {
+  resolveConfiguredDeferredChannelPluginIds,
+  resolveGatewayStartupPluginIds,
+} from "../plugins/channel-plugin-ids.js";
 import { getGlobalHookRunner, runGlobalGatewayStopSafely } from "../plugins/hook-runner-global.js";
 import { createEmptyPluginRegistry } from "../plugins/registry.js";
-import { setActivePluginRegistry } from "../plugins/runtime.js";
+import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
 import { createPluginRuntime } from "../plugins/runtime/index.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
 import { getTotalQueueSize } from "../process/command-queue.js";
 import type { RuntimeEnv } from "../runtime.js";
-import type { CommandSecretAssignment } from "../secrets/command-config.js";
+import {
+  resolveCommandSecretsFromActiveRuntimeSnapshot,
+  type CommandSecretAssignment,
+} from "../secrets/runtime-command-secrets.js";
 import {
   GATEWAY_AUTH_SURFACE_PATHS,
   evaluateGatewayAuthSurfaceStates,
@@ -68,20 +72,27 @@ import {
   clearSecretsRuntimeSnapshot,
   getActiveSecretsRuntimeSnapshot,
   prepareSecretsRuntimeSnapshot,
-  resolveCommandSecretsFromActiveRuntimeSnapshot,
 } from "../secrets/runtime.js";
 import { onSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import { onSessionTranscriptUpdate } from "../sessions/transcript-events.js";
+import {
+  getInspectableTaskRegistrySummary,
+  startTaskRegistryMaintenance,
+  stopTaskRegistryMaintenance,
+} from "../tasks/task-registry.maintenance.js";
 import { runSetupWizard } from "../wizard/setup.js";
 import { createAuthRateLimiter, type AuthRateLimiter } from "./auth-rate-limit.js";
+import { resolveGatewayAuth } from "./auth.js";
 import { startChannelHealthMonitor } from "./channel-health-monitor.js";
-import { startGatewayConfigReloader } from "./config-reload.js";
+import { resolveGatewayReloadSettings, startGatewayConfigReloader } from "./config-reload.js";
 import type { ControlUiRootState } from "./control-ui.js";
 import {
   GATEWAY_EVENT_UPDATE_AVAILABLE,
   type GatewayUpdateAvailableEventPayload,
 } from "./events.js";
+import { createExecApprovalIosPushDelivery } from "./exec-approval-ios-push.js";
 import { ExecApprovalManager } from "./exec-approval-manager.js";
+import { startMcpLoopbackServer } from "./mcp-http.js";
 import { startGatewayModelPricingRefresh } from "./model-pricing-cache.js";
 import { NodeRegistry } from "./node-registry.js";
 import { createChannelManager } from "./server-channels.js";
@@ -99,6 +110,7 @@ import { GATEWAY_EVENTS, listGatewayMethods } from "./server-methods-list.js";
 import { coreGatewayHandlers } from "./server-methods.js";
 import { createExecApprovalHandlers } from "./server-methods/exec-approval.js";
 import { safeParseJson } from "./server-methods/nodes.helpers.js";
+import { createPluginApprovalHandlers } from "./server-methods/plugin-approval.js";
 import { createSecretsHandlers } from "./server-methods/secrets.js";
 import { hasConnectedMobileNode } from "./server-mobile-nodes.js";
 import { loadGatewayModelCatalog } from "./server-model-catalog.js";
@@ -113,7 +125,7 @@ import { resolveGatewayRuntimeConfig } from "./server-runtime-config.js";
 import { createGatewayRuntimeState } from "./server-runtime-state.js";
 import { resolveSessionKeyForRun } from "./server-session-key.js";
 import { logGatewayStartup } from "./server-startup-log.js";
-import { runStartupMatrixMigration } from "./server-startup-matrix-migration.js";
+import { runStartupSessionMigration } from "./server-startup-session-migration.js";
 import { startGatewaySidecars } from "./server-startup.js";
 import { startGatewayTailscaleExposure } from "./server-tailscale.js";
 import { createWizardSessionTracker } from "./server-wizard-sessions.js";
@@ -128,6 +140,7 @@ import {
 import { resolveHookClientIpConfig } from "./server/hooks.js";
 import { createReadinessChecker } from "./server/readiness.js";
 import { loadGatewayTlsRuntime } from "./server/tls.js";
+import { resolveSharedGatewaySessionGeneration } from "./server/ws-shared-generation.js";
 import { resolveSessionKeyForTranscriptFile } from "./session-transcript-key.js";
 import {
   attachOpenClawTranscriptMeta,
@@ -169,6 +182,20 @@ function getChannelRuntime() {
   cachedChannelRuntime ??= createPluginRuntime().channel;
   return cachedChannelRuntime;
 }
+
+function pruneSkippedStartupSecretSurfaces(config: OpenClawConfig): OpenClawConfig {
+  const skipChannels =
+    isTruthyEnvValue(process.env.OPENCLAW_SKIP_CHANNELS) ||
+    isTruthyEnvValue(process.env.OPENCLAW_SKIP_PROVIDERS);
+  if (!skipChannels || !config.channels) {
+    return config;
+  }
+  return {
+    ...config,
+    channels: undefined,
+  };
+}
+
 const logHealth = log.child("health");
 const logCron = log.child("cron");
 const logReload = log.child("reload");
@@ -252,7 +279,7 @@ function assertValidGatewayStartupConfigSnapshot(
       ? formatConfigIssueLines(snapshot.issues, "", { normalizeRoot: true }).join("\n")
       : "Unknown validation issue.";
   const doctorHint = options.includeDoctorHint
-    ? `\nRun "${formatCliCommand("openclaw doctor")}" to repair, then retry.`
+    ? `\nRun "${formatCliCommand("openclaw doctor --fix")}" to repair, then retry.`
     : "";
   throw new Error(`Invalid config at ${snapshot.path}.\n${issues}${doctorHint}`);
 }
@@ -279,17 +306,33 @@ async function prepareGatewayStartupConfig(params: {
       tailscale: params.tailscaleOverride,
     },
   );
-  await params.activateRuntimeSecrets(startupPreflightConfig, {
-    reason: "startup",
-    activate: false,
-  });
+  const preflightConfig = (
+    await params.activateRuntimeSecrets(startupPreflightConfig, {
+      reason: "startup",
+      activate: false,
+    })
+  ).config;
+  const preflightAuthOverride =
+    typeof preflightConfig.gateway?.auth?.token === "string" ||
+    typeof preflightConfig.gateway?.auth?.password === "string"
+      ? {
+          ...params.authOverride,
+          ...(typeof preflightConfig.gateway?.auth?.token === "string"
+            ? { token: preflightConfig.gateway.auth.token }
+            : {}),
+          ...(typeof preflightConfig.gateway?.auth?.password === "string"
+            ? { password: preflightConfig.gateway.auth.password }
+            : {}),
+        }
+      : params.authOverride;
 
   const authBootstrap = await ensureGatewayStartupAuth({
     cfg: params.runtimeConfig,
     env: process.env,
-    authOverride: params.authOverride,
+    authOverride: preflightAuthOverride,
     tailscaleOverride: params.tailscaleOverride,
     persist: true,
+    baseHash: params.configSnapshot.hash,
   });
   const runtimeStartupConfig = applyGatewayAuthOverridesForStartupPreflight(authBootstrap.cfg, {
     auth: params.authOverride,
@@ -360,6 +403,10 @@ export type GatewayServerOptions = {
     runtime: import("../runtime.js").RuntimeEnv,
     prompter: import("../wizard/prompts.js").WizardPrompter,
   ) => Promise<void>;
+  /**
+   * Optional startup timestamp used for concise readiness logging.
+   */
+  startupStartedAt?: number;
 };
 
 export async function startGatewayServer(
@@ -387,29 +434,14 @@ export async function startGatewayServer(
         "Legacy config entries detected while running in Nix mode. Update your Nix config to the latest schema and restart.",
       );
     }
-    const { config: migrated, changes } = migrateLegacyConfig(configSnapshot.parsed);
-    if (!migrated) {
-      log.warn(
-        "gateway: legacy config entries detected but no auto-migration changes were produced; continuing with validation.",
-      );
-    } else {
-      await writeConfigFile(migrated);
-      if (changes.length > 0) {
-        log.info(
-          `gateway: migrated legacy config entries:\n${changes
-            .map((entry) => `- ${entry}`)
-            .join("\n")}`,
-        );
-      }
-    }
   }
-
-  configSnapshot = await readConfigFileSnapshot();
   if (configSnapshot.exists) {
     assertValidGatewayStartupConfigSnapshot(configSnapshot, { includeDoctorHint: true });
   }
 
-  const autoEnable = applyPluginAutoEnable({ config: configSnapshot.config, env: process.env });
+  const autoEnable = minimalTestGateway
+    ? { config: configSnapshot.config, changes: [] as string[] }
+    : applyPluginAutoEnable({ config: configSnapshot.config, env: process.env });
   if (autoEnable.changes.length > 0) {
     try {
       await writeConfigFile(autoEnable.config);
@@ -451,7 +483,9 @@ export async function startGatewayServer(
   ) =>
     await runWithSecretsActivationLock(async () => {
       try {
-        const prepared = await prepareSecretsRuntimeSnapshot({ config });
+        const prepared = await prepareSecretsRuntimeSnapshot({
+          config: pruneSkippedStartupSecretSurfaces(config),
+        });
         if (params.activate) {
           activateSecretsRuntimeSnapshot(prepared);
           logGatewayAuthSurfaceDiagnostics(prepared);
@@ -492,6 +526,7 @@ export async function startGatewayServer(
     });
 
   let cfgAtStart: OpenClawConfig;
+  let startupInternalWriteHash: string | null = null;
   const startupRuntimeConfig = applyConfigOverrides(configSnapshot.config);
   const authBootstrap = await prepareGatewayStartupConfig({
     configSnapshot,
@@ -512,65 +547,72 @@ export async function startGatewayServer(
       );
     }
   }
-  cfgAtStart = (
-    await activateRuntimeSecrets(cfgAtStart, {
-      reason: "startup",
-      activate: true,
-    })
-  ).config;
-
-  // Initialize HTTP proxy for LLM API requests (supports config and env vars).
-  const { installProxyFetch, resolveProxyUrl } = await import("../infra/proxy-fetch.js");
-  const proxyUrl = resolveProxyUrl(cfgAtStart.agents?.defaults?.proxy);
-  if (proxyUrl) {
-    installProxyFetch(proxyUrl);
-    log.info(`gateway: HTTP proxy enabled: ${proxyUrl}`);
-  }
-
   const diagnosticsEnabled = isDiagnosticsEnabled(cfgAtStart);
   if (diagnosticsEnabled) {
-    startDiagnosticHeartbeat();
+    startDiagnosticHeartbeat(undefined, { getConfig: getRuntimeConfig });
   }
   setGatewaySigusr1RestartPolicy({ allowExternal: isRestartEnabled(cfgAtStart) });
   setPreRestartDeferralCheck(
-    () => getTotalQueueSize() + getTotalPendingReplies() + getActiveEmbeddedRunCount(),
+    () =>
+      getTotalQueueSize() +
+      getTotalPendingReplies() +
+      getActiveEmbeddedRunCount() +
+      getInspectableTaskRegistrySummary().active,
   );
   // Unconditional startup migration: seed gateway.controlUi.allowedOrigins for existing
   // non-loopback installs that upgraded to v2026.2.26+ without required origins.
-  cfgAtStart = await maybeSeedControlUiAllowedOriginsAtStartup({
-    config: cfgAtStart,
-    writeConfig: writeConfigFile,
-    log,
-  });
-  await runStartupMatrixMigration({
-    cfg: cfgAtStart,
-    env: process.env,
-    log,
-  });
-  const matrixInstallPathIssue = await detectPluginInstallPathIssue({
-    pluginId: "matrix",
-    install: cfgAtStart.plugins?.installs?.matrix,
-  });
-  if (matrixInstallPathIssue) {
-    const lines = formatPluginInstallPathIssue({
-      issue: matrixInstallPathIssue,
-      pluginLabel: "Matrix",
-      defaultInstallCommand: "openclaw plugins install @openclaw/matrix",
-      repoInstallCommand: "openclaw plugins install ./extensions/matrix",
-      formatCommand: formatCliCommand,
-    });
-    log.warn(
-      `gateway: matrix install path warning:\n${lines.map((entry) => `- ${entry}`).join("\n")}`,
-    );
+  const controlUiSeed = minimalTestGateway
+    ? { config: cfgAtStart, persistedAllowedOriginsSeed: false }
+    : await maybeSeedControlUiAllowedOriginsAtStartup({
+        config: cfgAtStart,
+        writeConfig: writeConfigFile,
+        log,
+      });
+  cfgAtStart = controlUiSeed.config;
+  if (authBootstrap.persistedGeneratedToken || controlUiSeed.persistedAllowedOriginsSeed) {
+    const startupSnapshot = await readConfigFileSnapshot();
+    startupInternalWriteHash = startupSnapshot.hash ?? null;
   }
-
+  const startupMaintenanceConfig =
+    cfgAtStart.channels === undefined && startupRuntimeConfig.channels !== undefined
+      ? {
+          ...cfgAtStart,
+          channels: startupRuntimeConfig.channels,
+        }
+      : cfgAtStart;
+  if (!minimalTestGateway) {
+    await runChannelPluginStartupMaintenance({
+      cfg: startupMaintenanceConfig,
+      env: process.env,
+      log,
+    });
+    await runStartupSessionMigration({
+      cfg: cfgAtStart,
+      env: process.env,
+      log,
+    });
+  }
   initSubagentRegistry();
-  const defaultAgentId = resolveDefaultAgentId(cfgAtStart);
-  const defaultWorkspaceDir = resolveAgentWorkspaceDir(cfgAtStart, defaultAgentId);
+  const gatewayPluginConfigAtStart = minimalTestGateway
+    ? cfgAtStart
+    : applyPluginAutoEnable({
+        config: cfgAtStart,
+        env: process.env,
+      }).config;
+  const defaultAgentId = resolveDefaultAgentId(gatewayPluginConfigAtStart);
+  const defaultWorkspaceDir = resolveAgentWorkspaceDir(gatewayPluginConfigAtStart, defaultAgentId);
   const deferredConfiguredChannelPluginIds = minimalTestGateway
     ? []
     : resolveConfiguredDeferredChannelPluginIds({
-        config: cfgAtStart,
+        config: gatewayPluginConfigAtStart,
+        workspaceDir: defaultWorkspaceDir,
+        env: process.env,
+      });
+  const startupPluginIds = minimalTestGateway
+    ? []
+    : resolveGatewayStartupPluginIds({
+        config: gatewayPluginConfigAtStart,
+        activationSourceConfig: cfgAtStart,
         workspaceDir: defaultWorkspaceDir,
         env: process.env,
       });
@@ -580,15 +622,18 @@ export async function startGatewayServer(
   let baseGatewayMethods = baseMethods;
   if (!minimalTestGateway) {
     ({ pluginRegistry, gatewayMethods: baseGatewayMethods } = loadGatewayStartupPlugins({
-      cfg: cfgAtStart,
+      cfg: gatewayPluginConfigAtStart,
+      activationSourceConfig: cfgAtStart,
       workspaceDir: defaultWorkspaceDir,
       log,
       coreGatewayHandlers,
       baseMethods,
+      pluginIds: startupPluginIds,
       preferSetupRuntimeForChannelPlugins: deferredConfiguredChannelPluginIds.length > 0,
     }));
   } else {
-    setActivePluginRegistry(emptyPluginRegistry);
+    pluginRegistry = getActivePluginRegistry() ?? emptyPluginRegistry;
+    setActivePluginRegistry(pluginRegistry);
   }
   const channelLogs = Object.fromEntries(
     listChannelPlugins().map((plugin) => [plugin.id, logChannels.child(plugin.id)]),
@@ -596,8 +641,14 @@ export async function startGatewayServer(
   const channelRuntimeEnvs = Object.fromEntries(
     Object.entries(channelLogs).map(([id, logger]) => [id, runtimeForLogger(logger)]),
   ) as unknown as Record<ChannelId, RuntimeEnv>;
-  const channelMethods = listChannelPlugins().flatMap((plugin) => plugin.gatewayMethods ?? []);
-  const gatewayMethods = Array.from(new Set([...baseGatewayMethods, ...channelMethods]));
+  const listActiveGatewayMethods = (nextBaseGatewayMethods: string[]) =>
+    Array.from(
+      new Set([
+        ...nextBaseGatewayMethods,
+        ...listChannelPlugins().flatMap((plugin) => plugin.gatewayMethods ?? []),
+      ]),
+    );
+  let gatewayMethods = listActiveGatewayMethods(baseGatewayMethods);
   let pluginServices: PluginServicesHandle | null = null;
   const runtimeConfig = await resolveGatewayRuntimeConfig({
     cfg: cfgAtStart,
@@ -624,6 +675,40 @@ export async function startGatewayServer(
     tailscaleConfig,
     tailscaleMode,
   } = runtimeConfig;
+  const getResolvedAuth = () =>
+    resolveGatewayAuth({
+      authConfig:
+        getActiveSecretsRuntimeSnapshot()?.config.gateway?.auth ?? getRuntimeConfig().gateway?.auth,
+      authOverride: opts.auth,
+      env: process.env,
+      tailscaleMode,
+    });
+  const resolveSharedGatewaySessionGenerationForConfig = (config: OpenClawConfig) =>
+    resolveSharedGatewaySessionGeneration(
+      resolveGatewayAuth({
+        authConfig: config.gateway?.auth,
+        authOverride: opts.auth,
+        env: process.env,
+        tailscaleMode,
+      }),
+    );
+  const resolveCurrentSharedGatewaySessionGeneration = () =>
+    resolveSharedGatewaySessionGeneration(getResolvedAuth());
+  const resolveSharedGatewaySessionGenerationForRuntimeSnapshot = () =>
+    resolveSharedGatewaySessionGeneration(
+      resolveGatewayAuth({
+        authConfig: getRuntimeConfig().gateway?.auth,
+        authOverride: opts.auth,
+        env: process.env,
+        tailscaleMode,
+      }),
+    );
+  let currentSharedGatewaySessionGeneration = resolveCurrentSharedGatewaySessionGeneration();
+  let requiredSharedGatewaySessionGeneration: string | undefined | null = null;
+  const getRequiredSharedGatewaySessionGeneration = () =>
+    requiredSharedGatewaySessionGeneration === null
+      ? currentSharedGatewaySessionGeneration
+      : requiredSharedGatewaySessionGeneration;
   let hooksConfig = runtimeConfig.hooksConfig;
   let hookClientIpConfig = resolveHookClientIpConfig(cfgAtStart);
   const canvasHostEnabled = runtimeConfig.canvasHostEnabled;
@@ -685,7 +770,11 @@ export async function startGatewayServer(
   }
   const serverStartedAt = Date.now();
   const channelManager = createChannelManager({
-    loadConfig,
+    loadConfig: () =>
+      applyPluginAutoEnable({
+        config: loadConfig(),
+        env: process.env,
+      }).config,
     channelLogs,
     channelRuntimeEnvs,
     resolveChannelRuntime: getChannelRuntime,
@@ -694,6 +783,7 @@ export async function startGatewayServer(
     channelManager,
     startedAt: serverStartedAt,
   });
+  log.info("starting HTTP server...");
   const {
     canvasHost,
     releasePluginRouteRegistry,
@@ -701,6 +791,7 @@ export async function startGatewayServer(
     httpServers,
     httpBindHosts,
     wss,
+    preauthConnectionBudget,
     clients,
     broadcast,
     broadcastToConnIds,
@@ -743,6 +834,46 @@ export async function startGatewayServer(
     logPlugins,
     getReadiness,
   });
+  const disconnectStaleSharedGatewayAuthClients = (expectedGeneration: string | undefined) => {
+    for (const gatewayClient of clients) {
+      if (!gatewayClient.usesSharedGatewayAuth) {
+        continue;
+      }
+      if (gatewayClient.sharedGatewaySessionGeneration === expectedGeneration) {
+        continue;
+      }
+      try {
+        gatewayClient.socket.close(4001, "gateway auth changed");
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+  const setCurrentSharedGatewaySessionGeneration = (nextGeneration: string | undefined) => {
+    const previousGeneration = currentSharedGatewaySessionGeneration;
+    currentSharedGatewaySessionGeneration = nextGeneration;
+    if (requiredSharedGatewaySessionGeneration === nextGeneration) {
+      requiredSharedGatewaySessionGeneration = null;
+      return;
+    }
+    if (requiredSharedGatewaySessionGeneration !== null && previousGeneration !== nextGeneration) {
+      requiredSharedGatewaySessionGeneration = null;
+    }
+  };
+  const enforceSharedGatewaySessionGenerationForConfigWrite = (nextConfig: OpenClawConfig) => {
+    const reloadMode = resolveGatewayReloadSettings(nextConfig).mode;
+    const nextSharedGatewaySessionGeneration =
+      resolveSharedGatewaySessionGenerationForRuntimeSnapshot();
+    if (reloadMode === "off") {
+      currentSharedGatewaySessionGeneration = nextSharedGatewaySessionGeneration;
+      requiredSharedGatewaySessionGeneration = nextSharedGatewaySessionGeneration;
+      disconnectStaleSharedGatewayAuthClients(nextSharedGatewaySessionGeneration);
+      return;
+    }
+    requiredSharedGatewaySessionGeneration = null;
+    setCurrentSharedGatewaySessionGeneration(nextSharedGatewaySessionGeneration);
+    disconnectStaleSharedGatewayAuthClients(nextSharedGatewaySessionGeneration);
+  };
   let bonjourStop: (() => Promise<void>) | null = null;
   const noopInterval = () => setInterval(() => {}, 1 << 30);
   let tickInterval = noopInterval();
@@ -760,6 +891,7 @@ export async function startGatewayServer(
   let skillsChangeUnsub = () => {};
   let channelHealthMonitor: ReturnType<typeof startChannelHealthMonitor> | null = null;
   let stopModelPricingRefresh = () => {};
+  let mcpServer: { port: number; close: () => Promise<void> } | undefined;
   let configReloader: { stop: () => Promise<void> } = { stop: async () => {} };
   const closeOnStartupFailure = async () => {
     if (diagnosticsEnabled) {
@@ -775,6 +907,7 @@ export async function startGatewayServer(
     stopModelPricingRefresh();
     channelHealthMonitor?.stop();
     clearSecretsRuntimeSnapshot();
+    await mcpServer?.close().catch(() => {});
     await createGatewayCloseHandler({
       bonjourStop,
       tailscaleCleanup,
@@ -832,6 +965,7 @@ export async function startGatewayServer(
     broadcast,
   });
   let { cron, storePath: cronStorePath } = cronState;
+  deps.cron = cron;
 
   const { getRuntimeSnapshot, startChannels, startChannel, stopChannel, markChannelLoggedOut } =
     channelManager;
@@ -840,6 +974,13 @@ export async function startGatewayServer(
   let transcriptUnsub: (() => void) | null = null;
   let lifecycleUnsub: (() => void) | null = null;
   try {
+    try {
+      mcpServer = await startMcpLoopbackServer(0);
+      log.info(`MCP loopback server listening on http://127.0.0.1:${mcpServer.port}/mcp`);
+    } catch (error) {
+      log.warn(`MCP loopback server failed to start: ${String(error)}`);
+    }
+
     if (!minimalTestGateway) {
       const machineDisplayName = await getMachineDisplayName();
       const discovery = await startGatewayDiscovery({
@@ -881,6 +1022,7 @@ export async function startGatewayServer(
         });
 
     if (!minimalTestGateway) {
+      startTaskRegistryMaintenance();
       ({ tickInterval, healthInterval, dedupeCleanup, mediaCleanup } =
         startGatewayMaintenanceTimers({
           broadcast,
@@ -917,6 +1059,7 @@ export async function startGatewayServer(
             clearAgentRunContext,
             toolEventRecipients,
             sessionEventSubscribers,
+            isChatSendRunActive: (runId) => chatAbortControllers.has(runId),
           }),
         );
 
@@ -962,6 +1105,11 @@ export async function startGatewayServer(
                 chatType: sessionRow.chatType,
                 origin: sessionRow.origin,
                 spawnedBy: sessionRow.spawnedBy,
+                spawnedWorkspaceDir: sessionRow.spawnedWorkspaceDir,
+                forkedFromParent: sessionRow.forkedFromParent,
+                spawnDepth: sessionRow.spawnDepth,
+                subagentRole: sessionRow.subagentRole,
+                subagentControlScope: sessionRow.subagentControlScope,
                 label: sessionRow.label,
                 displayName: sessionRow.displayName,
                 deliveryContext: sessionRow.deliveryContext,
@@ -980,6 +1128,7 @@ export async function startGatewayServer(
                 lastChannel: sessionRow.lastChannel,
                 lastTo: sessionRow.lastTo,
                 lastAccountId: sessionRow.lastAccountId,
+                lastThreadId: sessionRow.lastThreadId,
                 totalTokens: sessionRow.totalTokens,
                 totalTokensFresh: sessionRow.totalTokensFresh,
                 contextTokens: sessionRow.contextTokens,
@@ -991,6 +1140,8 @@ export async function startGatewayServer(
                 startedAt: sessionRow.startedAt,
                 endedAt: sessionRow.endedAt,
                 runtimeMs: sessionRow.runtimeMs,
+                compactionCheckpointCount: sessionRow.compactionCheckpointCount,
+                latestCompactionCheckpoint: sessionRow.latestCompactionCheckpoint,
               }
             : {};
           const message = attachOpenClawTranscriptMeta(update.message, {
@@ -1057,6 +1208,11 @@ export async function startGatewayServer(
                     chatType: sessionRow.chatType,
                     origin: sessionRow.origin,
                     spawnedBy: sessionRow.spawnedBy,
+                    spawnedWorkspaceDir: sessionRow.spawnedWorkspaceDir,
+                    forkedFromParent: sessionRow.forkedFromParent,
+                    spawnDepth: sessionRow.spawnDepth,
+                    subagentRole: sessionRow.subagentRole,
+                    subagentControlScope: sessionRow.subagentControlScope,
                     label: event.label ?? sessionRow.label,
                     displayName: event.displayName ?? sessionRow.displayName,
                     deliveryContext: sessionRow.deliveryContext,
@@ -1075,6 +1231,7 @@ export async function startGatewayServer(
                     lastChannel: sessionRow.lastChannel,
                     lastTo: sessionRow.lastTo,
                     lastAccountId: sessionRow.lastAccountId,
+                    lastThreadId: sessionRow.lastThreadId,
                     totalTokens: sessionRow.totalTokens,
                     totalTokensFresh: sessionRow.totalTokensFresh,
                     contextTokens: sessionRow.contextTokens,
@@ -1086,6 +1243,8 @@ export async function startGatewayServer(
                     startedAt: sessionRow.startedAt,
                     endedAt: sessionRow.endedAt,
                     runtimeMs: sessionRow.runtimeMs,
+                    compactionCheckpointCount: sessionRow.compactionCheckpointCount,
+                    latestCompactionCheckpoint: sessionRow.latestCompactionCheckpoint,
                   }
                 : {}),
             },
@@ -1138,7 +1297,15 @@ export async function startGatewayServer(
 
     const execApprovalManager = new ExecApprovalManager();
     const execApprovalForwarder = createExecApprovalForwarder();
+    const execApprovalIosPushDelivery = createExecApprovalIosPushDelivery({ log });
     const execApprovalHandlers = createExecApprovalHandlers(execApprovalManager, {
+      forwarder: execApprovalForwarder,
+      iosPushDelivery: execApprovalIosPushDelivery,
+    });
+    const pluginApprovalManager = new ExecApprovalManager<
+      import("../infra/plugin-approvals.js").PluginApprovalRequestPayload
+    >();
+    const pluginApprovalHandlers = createPluginApprovalHandlers(pluginApprovalManager, {
       forwarder: execApprovalForwarder,
     });
     const secretsHandlers = createSecretsHandlers({
@@ -1147,10 +1314,18 @@ export async function startGatewayServer(
         if (!active) {
           throw new Error("Secrets runtime snapshot is not active.");
         }
+        const previousSharedGatewaySessionGeneration = currentSharedGatewaySessionGeneration;
         const prepared = await activateRuntimeSecrets(active.sourceConfig, {
           reason: "reload",
           activate: true,
         });
+        const nextSharedGatewaySessionGeneration = resolveSharedGatewaySessionGenerationForConfig(
+          prepared.config,
+        );
+        setCurrentSharedGatewaySessionGeneration(nextSharedGatewaySessionGeneration);
+        if (previousSharedGatewaySessionGeneration !== nextSharedGatewaySessionGeneration) {
+          disconnectStaleSharedGatewayAuthClients(nextSharedGatewaySessionGeneration);
+        }
         return { warningCount: prepared.warnings.length };
       },
       resolveSecrets: async ({ commandName, targetIds }) => {
@@ -1168,11 +1343,13 @@ export async function startGatewayServer(
 
     const canvasHostServerPort = (canvasHostServer as CanvasHostServer | null)?.port;
 
+    const unavailableGatewayMethods = new Set<string>(minimalTestGateway ? [] : ["chat.history"]);
     const gatewayRequestContext: import("./server-methods/types.js").GatewayRequestContext = {
       deps,
       cron,
       cronStorePath,
       execApprovalManager,
+      pluginApprovalManager,
       loadGatewayModelCatalog,
       getHealthCache,
       refreshHealthSnapshot: refreshGatewayHealthSnapshot,
@@ -1188,8 +1365,11 @@ export async function startGatewayServer(
       nodeUnsubscribe,
       nodeUnsubscribeAll,
       hasConnectedMobileNode: hasMobileNodeConnected,
-      hasExecApprovalClients: () => {
+      hasExecApprovalClients: (excludeConnId?: string) => {
         for (const gatewayClient of clients) {
+          if (excludeConnId && gatewayClient.connId === excludeConnId) {
+            continue;
+          }
           const scopes = Array.isArray(gatewayClient.connect.scopes)
             ? gatewayClient.connect.scopes
             : [];
@@ -1198,6 +1378,38 @@ export async function startGatewayServer(
           }
         }
         return false;
+      },
+      disconnectClientsForDevice: (deviceId: string, opts?: { role?: string }) => {
+        for (const gatewayClient of clients) {
+          if (gatewayClient.connect.device?.id !== deviceId) {
+            continue;
+          }
+          if (opts?.role && gatewayClient.connect.role !== opts.role) {
+            continue;
+          }
+          try {
+            gatewayClient.socket.close(4001, "device removed");
+          } catch {
+            /* ignore */
+          }
+        }
+      },
+      disconnectClientsUsingSharedGatewayAuth: () => {
+        for (const gatewayClient of clients) {
+          // Trusted-proxy sessions stay up here; only token/password-authenticated
+          // clients should be invalidated when the shared gateway secret changes.
+          if (!gatewayClient.usesSharedGatewayAuth) {
+            continue;
+          }
+          try {
+            gatewayClient.socket.close(4001, "gateway auth changed");
+          } catch {
+            /* ignore */
+          }
+        }
+      },
+      enforceSharedGatewayAuthGenerationForConfigWrite: (nextConfig: OpenClawConfig) => {
+        enforceSharedGatewaySessionGenerationForConfigWrite(nextConfig);
       },
       nodeRegistry,
       agentRunSeq,
@@ -1228,21 +1440,37 @@ export async function startGatewayServer(
       markChannelLoggedOut,
       wizardRunner,
       broadcastVoiceWakeChanged,
+      unavailableGatewayMethods,
     };
 
-    // Register a lazy fallback for plugin subagent dispatch in non-WS paths
-    // (Telegram polling, WhatsApp, etc.) so later runtime swaps can expose the
-    // current gateway context without relying on a startup snapshot.
     setFallbackGatewayContextResolver(() => gatewayRequestContext);
+
+    if (!minimalTestGateway) {
+      if (deferredConfiguredChannelPluginIds.length > 0) {
+        ({ pluginRegistry, gatewayMethods: baseGatewayMethods } = reloadDeferredGatewayPlugins({
+          cfg: gatewayPluginConfigAtStart,
+          workspaceDir: defaultWorkspaceDir,
+          log,
+          coreGatewayHandlers,
+          baseMethods,
+          pluginIds: startupPluginIds,
+          logDiagnostics: false,
+        }));
+        gatewayMethods = listActiveGatewayMethods(baseGatewayMethods);
+      }
+    }
 
     attachGatewayWsHandlers({
       wss,
       clients,
+      preauthConnectionBudget,
       port,
       gatewayHost: bindHost ?? undefined,
       canvasHostEnabled: Boolean(canvasHost),
       canvasHostServerPort,
       resolvedAuth,
+      getResolvedAuth,
+      getRequiredSharedGatewaySessionGeneration,
       rateLimiter: authRateLimiter,
       browserRateLimiter: browserAuthRateLimiter,
       gatewayMethods,
@@ -1253,6 +1481,7 @@ export async function startGatewayServer(
       extraHandlers: {
         ...pluginRegistry.gatewayHandlers,
         ...execApprovalHandlers,
+        ...pluginApprovalHandlers,
         ...secretsHandlers,
       },
       broadcast,
@@ -1264,8 +1493,10 @@ export async function startGatewayServer(
       bindHosts: httpBindHosts,
       port,
       tlsEnabled: gatewayTls.enabled,
+      pluginCount: pluginRegistry.plugins.length,
       log,
       isNixMode,
+      startupStartedAt: opts.startupStartedAt,
     });
     stopGatewayUpdateCheck = minimalTestGateway
       ? () => {}
@@ -1289,18 +1520,9 @@ export async function startGatewayServer(
         });
 
     if (!minimalTestGateway) {
-      if (deferredConfiguredChannelPluginIds.length > 0) {
-        ({ pluginRegistry } = reloadDeferredGatewayPlugins({
-          cfg: cfgAtStart,
-          workspaceDir: defaultWorkspaceDir,
-          log,
-          coreGatewayHandlers,
-          baseMethods,
-          logDiagnostics: false,
-        }));
-      }
+      log.info("starting channels and sidecars...");
       ({ pluginServices } = await startGatewaySidecars({
-        cfg: cfgAtStart,
+        cfg: gatewayPluginConfigAtStart,
         pluginRegistry,
         defaultWorkspaceDir,
         deps,
@@ -1309,6 +1531,7 @@ export async function startGatewayServer(
         logHooks,
         logChannels,
       }));
+      unavailableGatewayMethods.delete("chat.history");
     }
 
     // Run gateway_start plugin hook (fire-and-forget)
@@ -1341,6 +1564,7 @@ export async function startGatewayServer(
               cronState = nextState.cronState;
               cron = cronState.cron;
               cronStorePath = cronState.storePath;
+              deps.cron = cron;
               channelHealthMonitor = nextState.channelHealthMonitor;
             },
             startChannel,
@@ -1368,13 +1592,29 @@ export async function startGatewayServer(
 
           return startGatewayConfigReloader({
             initialConfig: cfgAtStart,
+            initialInternalWriteHash: startupInternalWriteHash,
             readSnapshot: readConfigFileSnapshot,
+            subscribeToWrites: registerConfigWriteListener,
             onHotReload: async (plan, nextConfig) => {
+              const previousSharedGatewaySessionGeneration = currentSharedGatewaySessionGeneration;
               const previousSnapshot = getActiveSecretsRuntimeSnapshot();
               const prepared = await activateRuntimeSecrets(nextConfig, {
                 reason: "reload",
                 activate: true,
               });
+              const nextSharedGatewaySessionGeneration =
+                resolveSharedGatewaySessionGenerationForConfig(prepared.config);
+              // activateRuntimeSecrets(..., { activate: true }) can make getResolvedAuth()
+              // observe the rotated secret before applyHotReload settles; advance current
+              // generation now so fresh reconnects are not rejected during that window.
+              currentSharedGatewaySessionGeneration = nextSharedGatewaySessionGeneration;
+              const sharedGatewaySessionGenerationChanged =
+                previousSharedGatewaySessionGeneration !== nextSharedGatewaySessionGeneration;
+              if (sharedGatewaySessionGenerationChanged) {
+                // Close stale shared-auth sockets before potentially long reload work so old
+                // sessions cannot continue receiving broadcasts while auth has rotated.
+                disconnectStaleSharedGatewayAuthClients(nextSharedGatewaySessionGeneration);
+              }
               try {
                 await applyHotReload(plan, prepared.config);
               } catch (err) {
@@ -1383,15 +1623,56 @@ export async function startGatewayServer(
                 } else {
                   clearSecretsRuntimeSnapshot();
                 }
+                currentSharedGatewaySessionGeneration = previousSharedGatewaySessionGeneration;
+                if (sharedGatewaySessionGenerationChanged) {
+                  // Rollback may have allowed reconnects on the transient new generation;
+                  // close them immediately so passive sockets cannot linger after revert.
+                  disconnectStaleSharedGatewayAuthClients(previousSharedGatewaySessionGeneration);
+                }
                 throw err;
               }
+              setCurrentSharedGatewaySessionGeneration(nextSharedGatewaySessionGeneration);
             },
             onRestart: async (plan, nextConfig) => {
-              await activateRuntimeSecrets(nextConfig, {
-                reason: "restart-check",
-                activate: false,
-              });
-              requestGatewayRestart(plan, nextConfig);
+              const previousRequiredSharedGatewaySessionGeneration =
+                requiredSharedGatewaySessionGeneration;
+              const previousSharedGatewaySessionGeneration = currentSharedGatewaySessionGeneration;
+              // Restart checks run with activate:false, so enforce invalidation
+              // only after SecretRefs are resolved from prepared.config.
+              try {
+                const prepared = await activateRuntimeSecrets(nextConfig, {
+                  reason: "restart-check",
+                  activate: false,
+                });
+                const nextSharedGatewaySessionGeneration =
+                  resolveSharedGatewaySessionGenerationForConfig(prepared.config);
+                const restartQueued = requestGatewayRestart(plan, nextConfig);
+                if (!restartQueued) {
+                  if (
+                    previousSharedGatewaySessionGeneration !== nextSharedGatewaySessionGeneration
+                  ) {
+                    // If restart is unavailable, activate the resolved secrets snapshot so
+                    // token/password auth accepts the rotated secret instead of lockout.
+                    activateSecretsRuntimeSnapshot(prepared);
+                    setCurrentSharedGatewaySessionGeneration(nextSharedGatewaySessionGeneration);
+                    requiredSharedGatewaySessionGeneration = null;
+                    disconnectStaleSharedGatewayAuthClients(nextSharedGatewaySessionGeneration);
+                  } else {
+                    requiredSharedGatewaySessionGeneration = null;
+                  }
+                  return;
+                }
+                if (previousSharedGatewaySessionGeneration !== nextSharedGatewaySessionGeneration) {
+                  requiredSharedGatewaySessionGeneration = nextSharedGatewaySessionGeneration;
+                  disconnectStaleSharedGatewayAuthClients(nextSharedGatewaySessionGeneration);
+                } else {
+                  requiredSharedGatewaySessionGeneration = null;
+                }
+              } catch (error) {
+                requiredSharedGatewaySessionGeneration =
+                  previousRequiredSharedGatewaySessionGeneration;
+                throw error;
+              }
             },
             log: {
               info: (msg) => logReload.info(msg),
@@ -1417,6 +1698,7 @@ export async function startGatewayServer(
     cron,
     heartbeatRunner,
     updateCheckStop: stopGatewayUpdateCheck,
+    stopTaskRegistryMaintenance,
     nodePresenceTimers,
     broadcast,
     tickInterval,
@@ -1456,6 +1738,7 @@ export async function startGatewayServer(
       stopModelPricingRefresh();
       channelHealthMonitor?.stop();
       clearSecretsRuntimeSnapshot();
+      await mcpServer?.close().catch(() => {});
       await close(opts);
     },
   };

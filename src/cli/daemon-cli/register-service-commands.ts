@@ -81,11 +81,6 @@ export function addGatewayServiceCommands(parent: Command, opts?: { statusDescri
     .command("start")
     .description("Start the Gateway service (launchd/systemd/schtasks)")
     .option("--json", "Output JSON", false)
-    .option(
-      "--auto-install",
-      "Install the service automatically if not installed (disable with --no-auto-install)",
-      true,
-    )
     .action(async (cmdOpts) => {
       await runDaemonStart(cmdOpts);
     });

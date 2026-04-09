@@ -1,3 +1,4 @@
+import { normalizeLowercaseStringOrEmpty } from "../shared/string-coerce.js";
 import {
   installLaunchAgent,
   isLaunchAgentLoaded,
@@ -18,9 +19,6 @@ import {
   stopPm2Service,
   uninstallPm2Service,
 } from "./pm2.js";
-
-export { isPm2Available };
-
 import {
   installScheduledTask,
   isScheduledTaskInstalled,
@@ -55,6 +53,8 @@ import {
   stopSystemdService,
   uninstallSystemdService,
 } from "./systemd.js";
+
+export { isPm2Available };
 export type {
   GatewayServiceCommandConfig,
   GatewayServiceControlArgs,
@@ -168,7 +168,7 @@ export function describeGatewayServiceRestart(
     return {
       scheduled: true,
       daemonActionResult: "scheduled",
-      message: `restart scheduled, ${serviceNoun.toLowerCase()} will restart momentarily`,
+      message: `restart scheduled, ${normalizeLowercaseStringOrEmpty(serviceNoun)} will restart momentarily`,
       progressMessage: `${serviceNoun} service restart scheduled.`,
     };
   }
@@ -200,12 +200,7 @@ const GATEWAY_SERVICE_REGISTRY: Record<SupportedGatewayServicePlatform, GatewayS
     label: "Systemd/PM2",
     loadedText: "active",
     notLoadedText: "inactive",
-    stage: async (args) => {
-      if (await isSystemdUserServiceAvailable()) {
-        await stageSystemdService(args);
-      }
-      // PM2 has no staging step; skip if only PM2 is available
-    },
+    stage: ignoreServiceWriteResult(stageSystemdService),
     install: async (args) => {
       if (await isSystemdUserServiceAvailable()) {
         await installSystemdService(args);

@@ -1,14 +1,10 @@
 # 🦞 OpenClaw — Personal AI Assistant
 
-> **国内用户（Linux/Windows）:** 本版本为 [@guadskill/openclaw-proxy](https://www.npmjs.com/package/@guadskill/openclaw-proxy)，内置 HTTP 代理支持与 PM2 守护进程。请先阅读 **[国内版设置方式](https://github.com/GuardSkill/openclaw-proxy/blob/main/%E5%9B%BD%E5%86%85%E7%89%88%E8%AE%BE%E7%BD%AE%E6%96%B9%E5%BC%8F.md)** 完成代理配置。
-
-<!-- <p align="center"> -->
-
+<p align="center">
     <picture>
         <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/openclaw-logo-text-dark.svg">
         <img src="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/openclaw-logo-text.svg" alt="OpenClaw" width="500">
     </picture>
-
 </p>
 
 <p align="center">
@@ -36,15 +32,64 @@ New install? Start here: [Getting started](https://docs.openclaw.ai/start/gettin
 
 ## Sponsors
 
-| OpenAI                                                            | Vercel                                                            | Blacksmith                                                                   | Convex                                                                |
-| ----------------------------------------------------------------- | ----------------------------------------------------------------- | ---------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| [![OpenAI](docs/assets/sponsors/openai.svg)](https://openai.com/) | [![Vercel](docs/assets/sponsors/vercel.svg)](https://vercel.com/) | [![Blacksmith](docs/assets/sponsors/blacksmith.svg)](https://blacksmith.sh/) | [![Convex](docs/assets/sponsors/convex.svg)](https://www.convex.dev/) |
+<table>
+  <tr>
+    <td align="center" width="16.66%">
+      <a href="https://openai.com/">
+        <picture>
+          <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/sponsors/openai-light.svg">
+          <img src="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/sponsors/openai.svg" alt="OpenAI" height="28">
+        </picture>
+      </a>
+    </td>
+    <td align="center" width="16.66%">
+      <a href="https://github.com/">
+        <picture>
+          <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/sponsors/github-light.svg">
+          <img src="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/sponsors/github.svg" alt="GitHub" height="28">
+        </picture>
+      </a>
+    </td>
+    <td align="center" width="16.66%">
+      <a href="https://www.nvidia.com/">
+        <picture>
+          <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/sponsors/nvidia.svg">
+          <img src="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/sponsors/nvidia-dark.svg" alt="NVIDIA" height="28">
+        </picture>
+      </a>
+    </td>
+    <td align="center" width="16.66%">
+      <a href="https://vercel.com/">
+        <picture>
+          <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/sponsors/vercel-light.svg">
+          <img src="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/sponsors/vercel.svg" alt="Vercel" height="24">
+        </picture>
+      </a>
+    </td>
+    <td align="center" width="16.66%">
+      <a href="https://blacksmith.sh/">
+        <picture>
+          <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/sponsors/blacksmith-light.svg">
+          <img src="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/sponsors/blacksmith.svg" alt="Blacksmith" height="28">
+        </picture>
+      </a>
+    </td>
+    <td align="center" width="16.66%">
+      <a href="https://www.convex.dev/">
+        <picture>
+          <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/sponsors/convex-light.svg">
+          <img src="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/sponsors/convex.svg" alt="Convex" height="24">
+        </picture>
+      </a>
+    </td>
+  </tr>
+</table>
 
 **Subscriptions (OAuth):**
 
 - **[OpenAI](https://openai.com/)** (ChatGPT/Codex)
 
-Model note: while many providers/models are supported, for the best experience and lower prompt-injection risk use the strongest latest-generation model available to you. See [Onboarding](https://docs.openclaw.ai/start/onboarding).
+Model note: while many providers and models are supported, prefer a current flagship model from the provider you trust and already use. See [Onboarding](https://docs.openclaw.ai/start/onboarding).
 
 ## Models (selection + auth)
 
@@ -326,7 +371,7 @@ Minimal `~/.openclaw/openclaw.json` (model + defaults):
 ```json5
 {
   agent: {
-    model: "anthropic/claude-opus-4-6",
+    model: "<provider>/<model-id>",
   },
 }
 ```
